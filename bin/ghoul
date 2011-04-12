@@ -1,0 +1,286 @@
+#!/bin/bash
+#           _                    __
+#          ( )     .            (. ) 
+#      __  | |__     _    _   _  | | 
+#    /'_ `\|  _ `\ /'_`\ ( ) ( ) | | 
+#   ( (_) || | | |( (_) )| (_) | | | 
+#   `\__  |(_) (_)`\___/'`\___/'(___)
+#   ( )_) |                          
+#    \___/'   Your deployment minion.                        
+#        `.
+#             Copyright (C) 2011 Alexis Sellier
+# 
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+# 
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+set -e
+
+# USER CONFIGURATION #
+
+#
+# Remote host
+#
+# The host we deploy to. This option can also be specified
+# via the `-h` option.
+#
+HOST=
+
+#
+# Remote port
+#
+# This can be overwriten with the `-p` option.
+#
+PORT=22
+
+#
+# Name of deployment target
+#
+# Defaults to the name of the current working directory.
+#
+# This will be used as the folder name we deploy to,
+# aswell as the identifier in the deployment archive files.
+#
+NAME=`basename $PWD`
+
+#
+# Deployment branch
+#
+# If this option is specified, ghoul does a checkout
+# of this branch before bundling the source and shipping
+# it to the remote. Overwritable with the `-b` option.
+#
+BRANCH=
+
+#
+# Remote deployment path
+#
+# The directory we deploy to on the remote host.
+# Folders will be created in the directory, for the individual revisions.
+#
+# For Archlinux, this would be "/srv/http/$NAME"
+#
+DEPLOY_PATH="/var/www/$NAME"
+
+#
+# Deployment user
+#
+# The user you want to deploy as. This defaults to the user you're
+# currently logged-in as.
+#
+USER=`whoami`
+
+#
+# Identity file
+#
+# The path to $USER's private key file. This option
+# is passed straight to ssh/scp.
+#
+IDENTITY="$HOME/.ssh/id_rsa"
+
+#
+# Remote command
+#
+# The command run on the remote host to start the application server.
+#
+# Golem is of course, the only sane choice.
+#
+COMMAND="golem -D -E production"
+
+#
+# Deploy hooks
+#
+# These functions get execute on the remote host, right *before* and *after*
+# (respectively) the new application is deployed.
+# If a non-zero value is returned by either of these functions, deployment is aborted,
+# and a roll-back is performed.
+#
+pre_deploy  () {
+  return 0
+}
+post_deploy () {
+  return 0
+}
+
+#
+# Remote application server pid file
+#
+# The path to your deployed application server's pid file.
+# This is used to `kill` and restart the application once the new
+# code is loaded.
+#
+PID="/var/run/golem.pid"
+
+#
+# Archive format
+#
+DATE_FORMAT="%Y%m%d%H%M"
+DATE=`date +$DATE_FORMAT`
+VERSION=`cat $PWD/VERSION`
+TAR="$NAME-v$VERSION.$DATE.tar.gz"
+
+# END OF USER CONFIGURATION #
+
+IGNORE="/tmp/.ghoulignore"
+
+#
+# Entry point for script, when run locally
+#
+main () {
+  echo $(basename $0)
+  exit 0
+  [ -f "package.json" ] || abort "package.json not found."
+
+  while getopts "i:p:h:b:d:" option
+  do
+    case $option in
+      i) IDENTITY=$OPTARG    ;;
+      h) HOST=$OPTARG        ;;  
+      p) PORT=$OPTARG        ;;
+      b) BRANCH=$OPTARG      ;;
+      d) DEPLOY_PATH=$OPTARG ;;
+     \?) usage; exit 0       ;;
+    esac
+  done
+
+  if [ -z $HOST ]; then
+    abort "HOST not specified.  Use \`-h' option to specify."
+  fi
+
+  log "${BOLD}deploying${CLEAR} to $USER@$HOST:$DEPLOY_PATH/$DATE"
+
+  if [ "$BRANCH" ]; then
+    log "checking out $BRANCH branch."
+    git checkout $BRANCH
+  fi
+
+  log "bundling dependencies.."
+
+  npm install || abort "bundling failed!"
+
+  log "creating archive.."
+
+  [ -f .npmignore ] && cat .npmignore  > $IGNORE
+  [ -f .gitignore ] && cat .gitignore >> $IGNORE
+  echo ".npmignore"                   >> $IGNORE
+  echo ".gitignore"                   >> $IGNORE
+  echo ".git"                         >> $IGNORE
+
+  local files=`ls -1A --color=never | grep -vf $IGNORE`
+
+  tar -czf /tmp/$TAR $files
+
+  log "created /tmp/$TAR"
+
+  local sha=`checksum /tmp/$TAR`
+
+  log "SHA1 is $sha"
+
+  log "copying files to remote host..."
+
+  scp -q -i $IDENTITY -P $PORT $0 /tmp/$TAR $USER@$HOST:/tmp                    || abort "error copying files!"
+
+  remote "GHOUL_REMOTE=1 /tmp/`basename $0` $TAR $DEPLOY_PATH $NAME $DATE $sha" || abort "remote failed to execute properly."
+
+  log "deploy successful."
+
+  # Successful
+  git tag -a -m $version
+  git push origin $BRANCH --tags
+}
+
+#
+# Entry point for script on remote host
+#
+_main () {
+  local tar=$1
+  local path=$2
+  local name=$3
+  local date=$4
+  local checksum=$5
+
+  log "executing remotely ($0).."
+
+  # create folder on server
+  mkdir -p $path/releases/$date
+  cd       $path
+
+  log "verifying archive.."
+
+  [ "`checksum /tmp/$tar`" == "$checksum" ] || abort "checksum doesn't match!"
+
+  log "extracting archive.."
+
+  tar -xzf /tmp/$tar
+
+  (pre_deploy) || abort "aborting deployment - pre_deploy returned $?"
+
+  ln -s -f releases/$date current
+
+  if [ ! -f $PID ]; then
+    log "starting application server ($COMMAND).."
+    ($COMMAND) || abort "error starting application server!"
+  else
+    local pid=`cat $PID`
+    log "application server is running ($pid). restarting.."
+    kill -s SIGHUP $pid
+  fi
+
+  (post_deploy) || abort "rolling back - post_deploy returned $?"
+}
+
+# Run command remotely
+remote () {
+  ssh -i $IDENTITY -p $PORT $USER@$HOST "$1"
+}
+
+usage () {
+  echo "usage: `basename $0` [-h HOST] [options]"
+  echo
+  echo "options:"
+  echo "  -i KEY    private key file"
+  echo "  -h HOST   remote ssh host"
+  echo "  -p PORT   remote ssh port"
+  echo "  -d PATH   remote deployment path"
+  echo "  -?        show this message"
+  exit 0
+}
+
+checksum () {
+  echo `openssl dgst -sha1 $1 | awk '{ print $2 }'`
+}
+
+#
+# Escapes/Colors
+#
+ESC="\033"
+BLUE="$ESC[34m"
+RED="$ESC[31m"
+BOLD="$ESC[1m"
+CLEAR="$ESC[0m"
+MARKER=" $BLUE*$CLEAR"
+
+log () {
+  echo -e "$MARKER $1" ; return 0
+}
+
+abort () {
+  echo -e " $RED* $BOLD$1$CLEAR" ; exit 1
+}
+
+if [ $GHOUL_REMOTE ]; then
+ _main "$@"
+else
+  main "$@"
+fi
+

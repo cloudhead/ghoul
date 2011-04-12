@@ -1,0 +1,17 @@
+
+        _                    __
+       ( )     .            (. ) 
+   __  | |__     _    _   _  | | 
+ /'_ `\|  _ `\ /'_`\ ( ) ( ) | | 
+( (_) || | | |( (_) )| (_) | | | 
+`\__  |(_) (_)`\___/'`\___/'(___)
+( )_) |                          
+ \___/'   Your deployment minion.                        
+     `.
+
+
+    Usage: edit 'bin/ghoul', then run `bin/ghoul`
+    Documentation: `cat bin/ghoul # RTFC`
+    License: `cat LICENSE`
+    Author: cloudhead
+  
