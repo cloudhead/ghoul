@@ -98,6 +98,14 @@ IDENTITY="$HOME/.ssh/id_rsa"
 COMMAND="golem -D -E production"
 
 #
+# Ping URL
+#
+# The URL to ping once we've deployed. This is mostly to check whether
+# or not the application was properly deployed.
+#
+PING="/"
+
+#
 # Deploy hooks
 #
 # These functions get execute on the remote host, right *before* and *after*
@@ -235,6 +243,10 @@ _main () {
     log "application server is running ($pid). restarting.."
     kill -s SIGHUP $pid
   fi
+
+  log "pinging server.."
+
+  curl -s -S -H "Host: $HOST" localhost:$PORT$PING || abort "server not responding to ping!"
 
   (post_deploy) || abort "rolling back - post_deploy returned $?"
 }
