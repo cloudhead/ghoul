@@ -201,7 +201,7 @@ main () {
   echo ".gitignore"                   >> $IGNORE
   echo ".git"                         >> $IGNORE
 
-  local files=`ls -1A --color=never | grep -vf $IGNORE`
+  local files=`/bin/ls -1A --color=never | grep -vf $IGNORE`
 
   tar -czf /tmp/$TAR $files
 
