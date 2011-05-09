@@ -98,6 +98,13 @@ IDENTITY="$HOME/.ssh/id_rsa"
 COMMAND="golem -D -E production"
 
 #
+# Restart signal
+#
+# The signal to send to the server to restart it.
+#
+SIGNAL="SIGHUP"
+
+#
 # Ping URL
 #
 # The URL to ping once we've deployed. This is mostly to check whether
@@ -118,6 +125,16 @@ pre_deploy  () {
 }
 post_deploy () {
   return 0
+}
+
+#
+# Deploy callback
+#
+# This function gets executed for each step in the deployment process.
+#
+callback () {
+  local step=$1
+  local success=$2
 }
 
 #
@@ -207,6 +224,61 @@ main () {
   git push origin $BRANCH --tags
 }
 
+verify () {
+  local tar=$1
+  local checksum=$2
+  log "verifying archive.."
+
+  return [ "`checksum /tmp/$tar`" == "$checksum" ]
+}
+
+extract () {
+  local tar=$1
+
+  log "extracting archive.."
+
+  tar -xzf /tmp/$tar
+
+  return $?
+}
+
+deploy () {
+  if [ ! -f $PID ]; then
+    log "starting application server ($COMMAND).."
+    ($COMMAND) || abort "error starting application server!"
+  else
+    local pid=`cat $PID`
+    log "application server is running ($pid). restarting.."
+    kill -s $SIGNAL $pid
+  fi
+  return $?
+}
+
+ping () {
+  log "pinging server.."
+  curl -s -S -H "Host: $HOST" localhost:$PORT$PING
+  return $?
+}
+
+link () {
+  local date=$1
+  ln -s -f releases/$date current
+  return $?
+}
+
+run () {
+  local step=$1
+  shift
+
+  ($step $@)
+
+  local result=$?
+
+  callback $step $result
+
+  return $result
+}
+
 #
 # Entry point for script on remote host
 #
@@ -223,32 +295,13 @@ _main () {
   mkdir -p $path/releases/$date
   cd       $path
 
-  log "verifying archive.."
-
-  [ "`checksum /tmp/$tar`" == "$checksum" ] || abort "checksum doesn't match!"
-
-  log "extracting archive.."
-
-  tar -xzf /tmp/$tar
-
-  (pre_deploy) || abort "aborting deployment - pre_deploy returned $?"
-
-  ln -s -f releases/$date current
-
-  if [ ! -f $PID ]; then
-    log "starting application server ($COMMAND).."
-    ($COMMAND) || abort "error starting application server!"
-  else
-    local pid=`cat $PID`
-    log "application server is running ($pid). restarting.."
-    kill -s SIGHUP $pid
-  fi
-
-  log "pinging server.."
-
-  curl -s -S -H "Host: $HOST" localhost:$PORT$PING || abort "server not responding to ping!"
-
-  (post_deploy) || abort "rolling back - post_deploy returned $?"
+  run "verify"     $tar $checksum || abort "checksum doesn't match!"
+  run "extract"    $tar           || abort "extraction failed!"
+  run "pre_deploy"                || abort "aborting deployment - pre_deploy returned $?"
+  run "link"       $date          || abort "couldn't link new release"
+  run "deploy"                    || abort "server start failed!"
+  run "ping"                      || abort "server not responding to ping!"
+  run "post_deploy"               || abort "rolling back - post_deploy returned $?"
 }
 
 # Run command remotely
