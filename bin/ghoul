@@ -162,8 +162,6 @@ IGNORE="/tmp/.ghoulignore"
 # Entry point for script, when run locally
 #
 main () {
-  echo $(basename $0)
-  exit 0
   [ -f "package.json" ] || abort "package.json not found."
 
   while getopts "i:p:h:b:d:" option
